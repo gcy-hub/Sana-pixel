@@ -1,451 +1,601 @@
-<p align="center" style="border-radius: 10px">
-  <img src="https://huggingface.co/datasets/Efficient-Large-Model/Sana-assets/resolve/main/asset/logo.png" width="35%" alt="logo"/>
-</p>
+# Sana-pixel
 
-<h3 align="center">
-<a href="https://nvlabs.github.io/Sana/docs/"><b>📚 Docs</b></a> | <a href="https://nvlabs.github.io/Sana/"><b>SANA</b></a> | <a href="https://nvlabs.github.io/Sana/Sana-1.5/"><b>SANA-1.5</b></a> | <a href="https://nvlabs.github.io/Sana/Sprint/"><b>SANA-Sprint</b></a> | <a href="https://nvlabs.github.io/Sana/Video/"><b>SANA-Video</b></a> | <a href="https://nvlabs.github.io/Sana/Video2/"><b>SANA-Video 2.0</b></a> | <a href="https://nvlabs.github.io/Sana/WM/"><b>SANA-WM</b></a> | <a href="https://nvlabs.github.io/Sana/Streaming/"><b>SANA-Streaming</b></a> | <a href="https://nvlabs.github.io/Sana/Sol-RL/"><b>Sol-RL</b></a>
+**把 SANA 1.5 从 latent 空间迁移到 pixel 空间做训练的代码**（在官方 [Sana](https://github.com/NVlabs/Sana) 代码库基础上改的个人版本）。
 
-<a href="https://nv-sana.mit.edu/"><b>Demo</b></a> | <a href="https://huggingface.co/spaces/Efficient-Large-Model/sana-video2-5b-720p-demo"><b>🎬 SANA-Video 2.0 Demo</b></a> | <a href="https://huggingface.co/collections/Efficient-Large-Model/sana"><b>🤗 HuggingFace</b></a> | <a href="https://github.com/lawrence-cj/ComfyUI_ExtraModels"><b>ComfyUI</b></a> | <a href="https://github.com/sgl-project/sglang"><b>SGLang</b></a> | <a href="https://github.com/nvidia-cosmos/cosmos-rl/blob/main/examples/sana.md"><b>Cosmos-RL</b></a>
+具体做的事：RGB `3×1024×1024` 图像**不经过 VAE**，直接进 ps32 patch embedder；保持 SANA 1.5 的 flow-matching velocity 目标（`flow_shift=3.0` + logit-normal 时间步）；复用 transformer / 时间 / 文本条件权重，只重新初始化 RGB patch embedder 与 Pixel Detailer Head；训练时只放开 transformer 的**前 5 块 + 后 5 块**，中间 10 块冻结。
 
-</h3>
+> **English TL;DR** — A personal fork of the Sana codebase for **latent→pixel transfer training** of SANA-1.5-1.6B at 1024px. See [§1](#1-给接手的人一页速览) for the handover checklist (what to copy, what to download, which paths to edit), [§6](#6-启动训练) for launch and [§7](#7-续训--断点恢复) for resume.
 
-<p align="center">
-  <a href="https://nv-sana.mit.edu/"><img src="https://img.shields.io/static/v1?label=Demo:6x3090&message=SANA&color=yellow"></a> &ensp;
-  <a href="https://nv-sana.mit.edu/4bit/"><img src="https://img.shields.io/static/v1?label=Demo:1x3090&message=4bit&color=yellow"></a> &ensp;
-  <a href="https://nv-sana.mit.edu/ctrlnet/"><img src="https://img.shields.io/static/v1?label=Demo:1x3090&message=ControlNet&color=yellow"></a> &ensp;
-  <a href="https://nv-sana.mit.edu/sprint/"><img src="https://img.shields.io/static/v1?label=Demo:1x3090&message=SANA-Sprint&color=yellow"></a> &ensp;
-  <a href="https://huggingface.co/spaces/Efficient-Large-Model/SanaSprint"><img src="https://img.shields.io/static/v1?label=Huggingface%20Demo&message=SANA-Sprint&color=yellow"></a> &ensp;
-  <a href="https://huggingface.co/spaces/Efficient-Large-Model/sana-video2-5b-720p-demo"><img src="https://img.shields.io/static/v1?label=Huggingface%20Demo&message=SANA-Video%202.0&color=76B900"></a> &ensp;
-</p>
+---
 
-<p align="center">
-  <a href="https://replicate.com/chenxwh/sana"><img src="https://img.shields.io/static/v1?label=API:H100&message=Replicate&color=pink"></a> &ensp;
-  <a href="https://discord.gg/rde6eaE5Ta"><img src="https://img.shields.io/static/v1?label=Discuss&message=Discord&color=purple&logo=discord"></a> &ensp;
-  <a href="https://sana-wm.reactor.inc/"><img src="https://img.shields.io/static/v1?label=Reactor%20Demo&message=SANA-WM&color=yellow"></a> &ensp;
-  <a href="https://sana-streaming.reactor.inc/"><img src="https://img.shields.io/static/v1?label=Reactor%20Demo&message=SANA-Streaming&color=yellow"></a> &ensp;
-</p>
+## 目录
 
-<p align="center">
-  <a href="https://github.com/NVlabs/Sana/tree/sol-engine">
-    <img src="asset/sol-engine-branch-banner.svg" width="100%" alt="Open the Sol-Engine inference engine branch"/>
-  </a>
-</p>
+1. [给接手的人：一页速览](#1-给接手的人一页速览)
+2. [硬件与验证过的环境](#2-硬件与验证过的环境)
+3. [要准备哪些模型和数据](#3-要准备哪些模型和数据)
+4. [必须改的路径](#4-必须改的路径)
+5. [数据集格式](#5-数据集格式)
+6. [启动训练](#6-启动训练)
+7. [续训 / 断点恢复](#7-续训--断点恢复)
+8. [显存、磁盘、时间预算](#8-显存磁盘时间预算)
+9. [推理（可选）](#9-推理可选)
+10. [常见坑](#10-常见坑)
+11. [上游与许可](#11-上游与许可)
 
-<h4 align="center">ICLR 2025 Oral | ICML 2025 | ICCV 2025 Highlight | ICLR 2026 Oral </h4>
+---
 
-**SANA** is an efficiency-oriented codebase for high-resolution image and video generation, providing complete training and inference pipelines. This repository contains code for [SANA](https://nvlabs.github.io/Sana/), [SANA-1.5](https://nvlabs.github.io/Sana/Sana-1.5/), [SANA-Sprint](https://nvlabs.github.io/Sana/Sprint/), [SANA-Video](https://nvlabs.github.io/Sana/Video/), [SANA-Video 2.0](https://nvlabs.github.io/Sana/Video2/), [SANA-WM](https://nvlabs.github.io/Sana/WM/), [SANA-Streaming](https://nvlabs.github.io/Sana/Streaming/), and [Sol-RL](https://nvlabs.github.io/Sana/Sol-RL/). More details can be found in our [📚 documentation](https://nvlabs.github.io/Sana/docs/).
+## 1. 给接手的人：一页速览
 
-Join our [Discord](https://discord.gg/rde6eaE5Ta) to engage in discussions with the community! If you have any questions, run into issues, or are interested in contributing, don't hesitate to reach out!
+### 1.1 你会拿到什么
 
-<p align="center" border-radius="10px">
-  <img src="https://huggingface.co/datasets/Efficient-Large-Model/Sana-assets/resolve/main/asset/Sana.jpg" width="90%" alt="teaser_page1"/>
-</p>
+| # | 东西 | 我这边的大小 | 用途 |
+|---|---|---|---|
+| 1 | 本仓库代码 | ~57 MB | 训练/推理全部代码 |
+| 2 | `webdataset/` 数据集 | **27 GB** | 20,000 条 1024×1024 图文样本 |
+| 3 | `gemma-2-2b-it/` 文本编码器 | **9.8 GB** | ⚠️ **必需**，不在模型 checkpoint 里 |
+| 4 | 训练好的模型 `epoch_XXX_step_XXX.pth` | **13.3 GB / 个** | 续训 / 微调的起点 |
 
-## News
+### 1.2 你还需要自己做什么
 
-- 🔥 [2026/09] ⚡ **SANA-Video 2.0 5B 4-Step Preview** is released! The DMD preview generates 720p videos in four denoising steps and supports 5-second and 8-second outputs. See [Online Demo](https://huggingface.co/spaces/Efficient-Large-Model/sana-video2-5b-720p-demo) | [4-Step Weights](https://huggingface.co/Efficient-Large-Model/SANA-Video_2.0_5B_720p_4step) | [Doc](https://nvlabs.github.io/Sana/docs/sana_video2/) | [Project](https://nvlabs.github.io/Sana/Video2/).
-- 🔥 [2026/08] 🎬 **SANA-Video 2.0** training, inference, model architecture, and 5B 720p checkpoint are released! The 8-second model supports both text-to-video and text-image-to-video generation, with hybrid linear/softmax attention and Attention Residuals. See [Online Demo](https://huggingface.co/spaces/Efficient-Large-Model/sana-video2-5b-720p-demo) | [Project](https://nvlabs.github.io/Sana/Video2/) | [Doc](https://nvlabs.github.io/Sana/docs/sana_video2/) | [Model Zoo](https://nvlabs.github.io/Sana/docs/model_zoo/#sana-video-20) | [Weights](https://huggingface.co/Efficient-Large-Model/SANA-Video_2.0_5B_720p).
-- 🔥 [2026/08] ⚡ **Sol Engine: Day-One MiniMax-H3 Acceleration** is available! The 33B omni-modal audio+video DiT runs **3.95×** faster on GB200, reached in 4.5 hours of optimization, and up to **4.52×** on hardware that sits on a desk — 3.92× on DGX Spark, 4.52× on GeForce RTX 5090 — with no distillation, no LoRA, and no calibration pass. See [GB200 Blog](https://nvlabs.github.io/Sana/Sol-Engine/H3/) | [On-Device Blog](https://nvlabs.github.io/Sana/Sol-Engine/H3-OnDevice/).
-- 🔥 [2026/07] 🌍 **SANA-Streaming** training is released! Includes bidirectional and distillation training. See [Doc](https://nvlabs.github.io/Sana/docs/sana_streaming/).
-- 🔥 [2026/07] 🌍 **SANA-WM** Stage-1 training is released! Includes bidirectional, chunk-causal, and distillation training. See [Doc](https://nvlabs.github.io/Sana/docs/sana_wm/).
-- 🔥 [2026/06] 🎬 **SANA-Streaming: 2B Model for Real-time Streaming Editing** is released! Supports 720p, 1-min video editing. A pioneer work for streaming editing. See [Project](https://nvlabs.github.io/Sana/Streaming/) | [Doc](https://nvlabs.github.io/Sana/docs/sana_streaming/) | [Paper](https://huggingface.co/papers/2605.30409) | [Reactor Demo](https://sana-streaming.reactor.inc).
-- 🔥 [2026/05] 🌍 **SANA-WM: 2.6B Controllable World Model** is released! Supports 720p, 1-min video generation with 6-DoF camera control. A new baseline for World Modeling and Embodied AI. See [Project](https://nvlabs.github.io/Sana/WM/) | [Doc](https://nvlabs.github.io/Sana/docs/sana_wm/) | [Paper](https://huggingface.co/papers/2605.15178) | [Reactor Demo](https://sana-wm.reactor.inc/).
-- 🔥 [2026/04] ⚡ **Sol-RL: NVFP4 Rollout, BF16 Training RL** is available! All training recipes for **SANA**, **FLUX.1**, and **SD3.5-L**, together with bundled post-training datasets, are released. See [Sol-RL doc](https://nvlabs.github.io/Sana/docs/sol_rl/) | [Page](https://nvlabs.github.io/Sana/Sol-RL/) | [Paper](https://arxiv.org/abs/2604.06916).
-- 🔥 [2026/03] 📺 **SANA-Video 720p model with LTX-VAE** is released. Use it with LTX2 Refiner to upscale the videos to 2K resolution! See [Model Zoo](https://nvlabs.github.io/Sana/docs/model_zoo/#sana-video), [SANA-Video doc](https://nvlabs.github.io/Sana/docs/sana_video/) and [Blog about refiner](https://nvlabs.github.io/Sana/Video/bet-small-win-big/blog.html).
-- 🔥 [2026/03] 💪 **Post Training Infra: SANA × Cosmos-RL** — We partner with [Cosmos-RL](https://github.com/nvidia-cosmos/cosmos-rl) to provide a complete RL infrastructure for SANA. You can now post-train (SFT/RL) SANA-Image and SANA-Video with state-of-the-art algorithms (e.g. Diffusion-NFT, Flow-GRPO), preset configs, reward services, and flexible datasets. See [SANA on Cosmos-RL](https://github.com/nvidia-cosmos/cosmos-rl/blob/main/examples/sana.md) and our [Cosmos-RL integration doc](https://nvlabs.github.io/Sana/docs/sana_cosmos_rl/).
-- 🔥 [2026/02] 🚀 **SANA is now supported in [SGLang](https://github.com/sgl-project/sglang)!** High-performance serving with OpenAI-compatible API. [[Guidance]](https://nvlabs.github.io/Sana/docs/sglang/)
-- 🔥 [2026/01/26] **SANA-Video is accepted as Oral by ICLR-2026.** 🎉🎉🎉
-- 🔥 [2025/12/09] 🎬 [LongSANA](https://nvlabs.github.io/Sana/docs/longsana/): 27FPS real-time minute-length video generation model, training and inference code are all released. Thanks to [LongLive Team](https://github.com/NVlabs/LongLive). Refer to: [[Train]](https://nvlabs.github.io/Sana/docs/longsana/#how-to-train) | [[Test]](https://nvlabs.github.io/Sana/docs/longsana/#how-to-inference) | [[Weight]](https://nvlabs.github.io/Sana/docs/model_zoo/#sana-video)
-- 🔥 [2025/11/24] 🪶 [Blog](https://hanlab.mit.edu/blog/infinite-context-length-with-global-but-constant-attention-memory): how Causal Linear Attention unlocks infinite context for LLMs and long video generation.
-- 🔥 [2025/11/9] 🎬 [Introduction video](https://www.youtube.com/watch?v=ztdkfIMkdJ4) shows how Block Causal Linear Attention and Causal Mix-FFN work?
-- 🔥 [2025/11/6] 📺**SANA-Video** is merged into [diffusers](https://huggingface.co/docs/diffusers/main/en/api/pipelines/sana_video). [How to use](https://nvlabs.github.io/Sana/docs/sana_video/#1-how-to-use-sana-video-pipelines-in-diffusers).
-- 🔥 [2025/10/27] 📺**SANA-Video** is released. [[README]](https://nvlabs.github.io/Sana/docs/sana_video/) | [[Weights]](https://nvlabs.github.io/Sana/docs/model_zoo/#sana-video) support Text-to-Video, TextImage-to-Video.
-- 🔥 [2025/10/13] 📺**SANA-Video** is coming, 1). a 5s Linear DiT Video model, and 2). real-time minute-length video generation (with [LongLive](https://github.com/NVlabs/LongLive)). [[paper]](https://www.arxiv.org/pdf/2509.24695) | [[Page]](https://nvlabs.github.io/Sana/Video/)
+| 要做的事 | 说明 |
+|---|---|
+| 装环境 | Python 3.12 + CUDA 12.4 对应的 torch 2.5.1，见 [§2](#2-硬件与验证过的环境)。**不要**直接跑 `environment_setup.sh`（它 pin 的是另一套版本） |
+| 改 3 个路径 | `configs/sana_pixel/*.yaml` 里的数据集路径、`model.load_from`、gemma 路径，见 [§4](#4-必须改的路径) |
+| 改启动脚本 | `train_scripts/sbatch_train_sana_pixel_8gpu_100epoch.sh` 里的 `REPO_ROOT`、conda 环境名、Slurm 账号/分区，见 [§4](#4-必须改的路径) |
+| **不需要**下载 VAE | DC-AE VAE (`mit-han-lab/dc-ae-f32c32-sana-1.1-diffusers`) 在 pixel 模式下**完全不会被构造**，不用下 |
+| **不需要**下载 pixel-init | 如果你是**续训**我给的 checkpoint，`model.load_from` 会被自动跳过（见 [§7](#7-续训--断点恢复)） |
 
-<details>
-  <summary>Click to show all updates</summary>
-
-- ✅ [2025/8/20] We release a new DC-AE-Lite for faster inference and smaller memory. [[How to config]](https://github.com/NVlabs/Sana/blob/main/configs/sana_sprint_config/1024ms/SanaSprint_1600M_1024px_allqknorm_bf16_scm_ladd_dc_ae_lite.yaml#L52) | [[diffusers PR]](https://github.com/huggingface/diffusers/pull/12169) | [[Weight]](https://huggingface.co/mit-han-lab/dc-ae-lite-f32c32-sana-1.1-diffusers)
-- ✅ [2025/6/25] [SANA-Sprint](https://nvlabs.github.io/Sana/Sprint/) was accepted to ICCV'25 🏖️
-- ✅ [2025/6/4] SANA-Sprint [ComfyUI Node](https://github.com/lawrence-cj/ComfyUI_ExtraModels) is released [[Example]](docs/ComfyUI/SANA-Sprint.json).
-- ✅ [2025/5/8] SANA-Sprint (One-step diffusion) diffusers training code is released [[Guidance]](https://github.com/huggingface/diffusers/blob/main/examples/research_projects/sana/README.md).
-- ✅ [2025/5/4] **SANA-1.5 (Inference-time scaling) is accepted by ICML-2025.** 🎉🎉🎉
-- ✅ [2025/3/22] 🔥**SANA-Sprint demo is hosted on Huggingface, try it!** 🎉 [[Demo Link]](https://huggingface.co/spaces/Efficient-Large-Model/SanaSprint)
-- ✅ [2025/3/22] 🔥**SANA-1.5 is supported in ComfyUI!** 🎉: [ComfyUI Guidance](https://nvlabs.github.io/Sana/docs/ComfyUI/comfyui/) | [ComfyUI Work Flow SANA-1.5 4.8B](https://nvlabs.github.io/Sana/docs/ComfyUI/SANA-1.5_FlowEuler.json)
-- ✅ [2025/3/22] 🔥**SANA-Sprint code & weights are released!** 🎉 Include: [Training & Inference](https://nvlabs.github.io/Sana/docs/sana_sprint/) code and [Weights](https://nvlabs.github.io/Sana/docs/model_zoo/#sana-sprint) / [HF](https://huggingface.co/collections/Efficient-Large-Model/sana-sprint) are all released. [[Guidance]](https://nvlabs.github.io/Sana/docs/sana_sprint/)
-- ✅ [2025/3/21] 🚀Sana + **Inference Scaling** is released. [[Guidance]](https://nvlabs.github.io/Sana/docs/inference_scaling/)
-- ✅ [2025/3/16] 🔥**SANA-1.5 code & weights are released!** 🎉 Include: [DDP/FSDP](https://nvlabs.github.io/Sana/docs/sana/#training) | [TAR file WebDataset](https://nvlabs.github.io/Sana/docs/sana/#multi-scale-webdataset) | [Multi-Scale](https://nvlabs.github.io/Sana/docs/sana/#training-with-fsdp) Training code and [Weights](https://nvlabs.github.io/Sana/docs/model_zoo/#sana-15) | [HF](https://huggingface.co/collections/Efficient-Large-Model/sana-15) are all released.
-- ✅ [2025/3/14] 🏃**SANA-Sprint is coming out!** 🎉 A new one/few-step generator of Sana. 0.1s per 1024px image on H100, 0.3s on RTX 4090. Find out more details: [[Page]](https://nvlabs.github.io/Sana/Sprint/) | [[Arxiv]](https://arxiv.org/abs/2503.09641). Code is coming very soon along with `diffusers`
-- ✅ [2025/2/10] 🚀Sana + ControlNet is released. [[Guidance]](https://nvlabs.github.io/Sana/docs/sana_controlnet/) | [[Model]](https://nvlabs.github.io/Sana/docs/model_zoo/#sana) | [[Demo]](https://nv-sana.mit.edu/ctrlnet/)
-- ✅ [2025/1/30] Release CAME-8bit optimizer code. Saving more GPU memory during training. [[How to config]](https://github.com/NVlabs/Sana/blob/main/configs/sana_config/1024ms/Sana_1600M_img1024_CAME8bit.yaml#L86)
-- ✅ [2025/1/29] 🎉 🎉 🎉**SANA 1.5 is out! Figure out how to do efficient training & inference scaling!** 🚀[[Tech Report]](https://arxiv.org/abs/2501.18427)
-- ✅ [2025/1/24] 4bit-Sana is released, powered by [SVDQuant and Nunchaku](https://github.com/mit-han-lab/nunchaku) inference engine. Now run your Sana within **8GB** GPU VRAM [[Guidance]](https://nvlabs.github.io/Sana/docs/4bit_sana/) [[Demo]](https://svdquant.mit.edu/) [[Model]](https://nvlabs.github.io/Sana/docs/model_zoo/#sana)
-- ✅ [2025/1/24] DCAE-1.1 is released, better reconstruction quality. [[Model]](https://huggingface.co/mit-han-lab/dc-ae-f32c32-sana-1.1) [[diffusers]](https://huggingface.co/mit-han-lab/dc-ae-f32c32-sana-1.1-diffusers)
-- ✅ [2025/1/23] **Sana is accepted as Oral by ICLR-2025.** 🎉🎉🎉
-- ✅ [2025/1/12] DC-AE tiling makes Sana-4K inferences 4096x4096px images within 22GB GPU memory. With model offload and 8bit/4bit quantize. The 4K Sana run within **8GB** GPU VRAM. [[Guidance]](https://nvlabs.github.io/Sana/docs/model_zoo/#3-2k-4k-models)
-- ✅ [2025/1/11] Sana code-base license changed to Apache 2.0.
-- ✅ [2025/1/10] Inference Sana with 8bit quantization.[[Guidance]](https://nvlabs.github.io/Sana/docs/8bit_sana/#quantization)
-- ✅ [2025/1/8] 4K resolution [Sana models](https://nvlabs.github.io/Sana/docs/model_zoo/#sana) is supported in [Sana-ComfyUI](https://github.com/lawrence-cj/ComfyUI_ExtraModels) and [work flow](https://nvlabs.github.io/Sana/docs/ComfyUI/Sana_FlowEuler_4K.json) is also prepared. [[4K guidance]](https://nvlabs.github.io/Sana/docs/ComfyUI/comfyui/#a-sample-workflow-for-sana-4096x4096-image-18gb-gpu-is-needed)
-- ✅ [2025/1/8] 1.6B 4K resolution [Sana models](https://nvlabs.github.io/Sana/docs/model_zoo/#sana) are released: [[BF16 pth]](https://huggingface.co/Efficient-Large-Model/Sana_1600M_4Kpx_BF16) or [[BF16 diffusers]](https://huggingface.co/Efficient-Large-Model/Sana_1600M_4Kpx_BF16_diffusers). 🚀 Get your 4096x4096 resolution images within 20 seconds! Find more samples in [Sana page](https://nvlabs.github.io/Sana/). Thanks [SUPIR](https://github.com/Fanghua-Yu/SUPIR) for their wonderful work and support.
-- ✅ [2025/1/2] Bug in the `diffusers` pipeline is solved. [Solved PR](https://github.com/huggingface/diffusers/pull/10431)
-- ✅ [2025/1/2] 2K resolution [Sana models](asset/docs/model_zoo.md) is supported in [Sana-ComfyUI](https://github.com/lawrence-cj/ComfyUI_ExtraModels) and [work flow](asset/docs/ComfyUI/Sana_FlowEuler_2K.json) is also prepared.
-- ✅ [2024/12] 1.6B 2K resolution [Sana models](asset/docs/model_zoo.md) are released: [[BF16 pth]](https://huggingface.co/Efficient-Large-Model/Sana_1600M_2Kpx_BF16) or [[BF16 diffusers]](https://huggingface.co/Efficient-Large-Model/Sana_1600M_2Kpx_BF16_diffusers). 🚀 Get your 2K resolution images within 4 seconds! Find more samples in [Sana page](https://nvlabs.github.io/Sana/). Thanks [SUPIR](https://github.com/Fanghua-Yu/SUPIR) for their wonderful work and support.
-- ✅ [2024/12] `diffusers` supports Sana-LoRA fine-tuning! Sana-LoRA's training and convergence speed is super fast. [[Guidance]](https://nvlabs.github.io/Sana/docs/sana_lora_dreambooth/) or [[diffusers docs]](https://github.com/huggingface/diffusers/blob/main/examples/dreambooth/README_sana.md).
-- ✅ [2024/12] `diffusers` has Sana! [All Sana models in diffusers safetensors](https://huggingface.co/collections/Efficient-Large-Model/sana) are released and diffusers pipeline `SanaPipeline`, `SanaPAGPipeline`, `DPMSolverMultistepScheduler(with FlowMatching)` are all supported now. We prepare a [Model Card](https://nvlabs.github.io/Sana/docs/model_zoo/#sana) for you to choose.
-- ✅ [2024/12] 1.6B BF16 [Sana model](https://huggingface.co/Efficient-Large-Model/Sana_1600M_1024px_BF16) is released for stable fine-tuning.
-- ✅ [2024/12] We release the [ComfyUI node](https://github.com/lawrence-cj/ComfyUI_ExtraModels) for Sana. [[Guidance]](https://nvlabs.github.io/Sana/docs/ComfyUI/comfyui/)
-- ✅ [2024/11] All multi-linguistic (Emoji & Chinese & English) SFT models are released: [1.6B-512px](https://huggingface.co/Efficient-Large-Model/Sana_1600M_512px_MultiLing), [1.6B-1024px](https://huggingface.co/Efficient-Large-Model/Sana_1600M_1024px_MultiLing), [600M-512px](https://huggingface.co/Efficient-Large-Model/Sana_600M_512px), [600M-1024px](https://huggingface.co/Efficient-Large-Model/Sana_600M_1024px). The metric performance is shown [here](#performance)
-- ✅ [2024/11] Sana Replicate API is launching at [Sana-API](https://replicate.com/chenxwh/sana).
-- ✅ [2024/11] 1.6B [Sana models](https://huggingface.co/collections/Efficient-Large-Model/sana) are released.
-- ✅ [2024/11] Training & Inference & Metrics code are released.
-- ✅ [2024/11] Working on [`diffusers`](https://github.com/huggingface/diffusers/pull/9982).
-- [2024/10] [Demo](https://nv-sana.mit.edu/) is released.
-- [2024/10] [DC-AE Code](https://github.com/mit-han-lab/efficientvit/blob/master/applications/dc_ae/README.md) and [weights](https://huggingface.co/collections/mit-han-lab/dc-ae) are released!
-- [2024/10] [Paper](https://arxiv.org/abs/2410.10629) is on Arxiv!
-
-</details>
-
-## 💡 Introduction
-
-We introduce **SANA**, a series of efficient diffusion models for high-resolution image and video generation:
-
-- **[SANA](https://nvlabs.github.io/Sana/)**: Text-to-image generation up to 4K resolution, **20× smaller and 100× faster** than Flux-12B.
-- **[SANA-1.5](https://nvlabs.github.io/Sana/Sana-1.5/)**: Efficient training-time and inference-time compute scaling for better quality.
-- **[SANA-Sprint](https://nvlabs.github.io/Sana/Sprint/)**: One/few-step generation via sCM distillation, **0.1s per 1024px image** on H100.
-- **[SANA-Video/LongSANA](https://nvlabs.github.io/Sana/Video/)**: Efficient video generation with Block Linear Attention / with [LongLive](https://github.com/NVlabs/LongLive).
-- **[SANA-Video 2.0](https://nvlabs.github.io/Sana/Video2/)**: 5B and 14B text-to-video/text-image-to-video architectures with hybrid linear/softmax attention and Attention Residuals. Try the [5B 720p 4-step preview](https://huggingface.co/spaces/Efficient-Large-Model/sana-video2-5b-720p-demo), or download the [50-step](https://huggingface.co/Efficient-Large-Model/SANA-Video_2.0_5B_720p) and [4-step preview](https://huggingface.co/Efficient-Large-Model/SANA-Video_2.0_5B_720p_4step) checkpoints; the 14B config and checkpoint are not included yet.
-- **[Sol-RL](https://nvlabs.github.io/Sana/Sol-RL/)**: NVFP4 Rollout, BF16 Training RL achieves **4.64× faster convergence**.
-- **[SANA-WM](https://nvlabs.github.io/Sana/WM/)**: 2.6B parameter controllable world model, generating 720p, 1-minute video worlds with 6-DoF camera control.
-- **[SANA-Streaming](https://nvlabs.github.io/Sana/Streaming/)**: 2B real-time streaming video-to-video editing for 720p, minute-scale videos.
-
-**Key Techniques:**
-
-- **Linear Attention**: Replace vanilla attention in DiT with linear attention for efficiency at high resolutions.
-- **[DC-AE](https://hanlab.mit.edu/projects/dc-ae)**: 32× image compression (vs. traditional 8×) to reduce latent tokens.
-- **Decoder-only Text Encoder**: Modern decoder-only LLM with in-context learning for better text-image alignment.
-- **Block Causal Linear Attention & Causal Mix-FFN**: Efficient attention and feedforward for long video generation.
-- **Hybrid Attention & Attention Residuals**: Combine gated linear attention with periodic softmax anchors and shared depth-wise residual aggregation.
-- **Flow-DPM-Solver**: Reduce sampling steps with efficient training and sampling.
-- **sCM Distillation**: One/few-step generation with continuous-time consistency distillation.
-- **Sol-RL**: Low precision(NVFP4) rollout selection, high precesion(BF16) optimization for faster RL training.
-- **Controllable World Modeling**: Efficient long-context modeling and camera trajectory control for consistent world generation.
-- **Streaming Video Editing**: Real-time long-form video-to-video editing with stable temporal consistency.
-
-**In summary**, SANA is a fully open-source framework integrating **efficient training, fast inference, and flexible deployment** for both image and video generation. Deployable on laptop GPUs with **< 8GB VRAM** via 4-bit quantization.
-
-<p align="center">
-  <img src="asset/all.png" width="90%" alt="SANA Series overview: efficient image, video, world models, and post-training"/>
-</p>
-
-## Quick Start
+### 1.3 最短路径（假设你要接着我的训练继续跑）
 
 ```bash
-git clone https://github.com/NVlabs/Sana.git
-cd Sana && ./environment_setup.sh sana
+# 0. 假设代码在 /your/path/Sana，数据集在 /your/data/SANA-Pixel-Dataset/webdataset
+cd /your/path/Sana
+export PYTHONPATH=$PWD                      # 必需，这个仓库不是以包形式安装的
+
+# 1. 把模型放到 work_dir 的 checkpoints/ 下
+mkdir -p output/sana_pixel_8gpu_1000epoch/checkpoints
+cp /path/to/epoch_210_step_65597.pth output/sana_pixel_8gpu_1000epoch/checkpoints/
+
+# 2. 改 configs/sana_pixel/Sana_1600M_1024px_webdataset_bf16_lr2e5.yaml 里的 3 个路径
+
+# 3. 续训
+NP=8 WORK_DIR=output/sana_pixel_8gpu_1000epoch bash train_scripts/train_sana_pixel.sh \
+  --name=sana_pixel_8gpu_1000epoch --report_to=tensorboard --resume_from=latest \
+  --train.train_batch_size=4 --train.gradient_accumulation_steps=4 \
+  --train.num_epochs=1000 --train.early_stop_hours=0 --train.visualize=true \
+  --train.eval_sampling_epochs=15 --train.eval_sampling_steps=1000000000 \
+  --train.save_model_epochs=15 --train.save_model_steps=1000000000
 ```
 
-### SANA-Video 2.0 5B release demo
+---
 
-This sample was generated from the public 5B checkpoint with seed 4. The result
-contains 193 frames at 24 FPS in a 1280 × 736 bucket (8.04 seconds).
+## 2. 硬件与验证过的环境
 
-Try your own prompt in the [SANA-Video 2.0 5B 720p 4-step preview](https://huggingface.co/spaces/Efficient-Large-Model/sana-video2-5b-720p-demo), or reproduce the original 50-step sample below with its exact release command.
+### 2.1 硬件
 
-<p align="center">
-  <a href="https://huggingface.co/datasets/Efficient-Large-Model/Sana-assets/resolve/main/Video2/assets/release-demo/sana_video2_5b_720p_rooster.mp4">
-    <img src="https://huggingface.co/datasets/Efficient-Large-Model/Sana-assets/resolve/main/Video2/assets/release-demo/sana_video2_5b_720p_rooster_poster.png" width="90%" alt="SANA-Video 2.0 5B release demo: a cartoon rooster holding a beer bottle in a floral vintage room"/>
-  </a>
-</p>
+| 项 | 我这边验证过的 | 说明 |
+|---|---|---|
+| GPU | **NVIDIA A40 46 GB** | 生产跑的是 2 节点 × 4 卡 = 8 卡（Slurm） |
+| 最小可跑 | 1 卡（`NP=1`，仅用于 smoke） | 正式训练建议 ≥ 4 卡 |
+| 节点资源 | 每节点 72 CPU / 大内存 | `num_workers: 10`，数据是 1024px 原图 |
+| 驱动 | 550.54.14 | CUDA 12.4 运行时 |
+| 本地磁盘 | 训练目录要留 **≥ 400 GB** | checkpoint 不自动清理，见 [§8](#8-显存磁盘时间预算) |
 
-<p align="center">
-  <a href="https://huggingface.co/datasets/Efficient-Large-Model/Sana-assets/resolve/main/Video2/assets/release-demo/sana_video2_5b_720p_rooster.mp4">▶ Watch or download the generated video</a>
-</p>
+### 2.2 验证过的版本（**照抄这一套**）
 
-> **Prompt:** In a cozy, vintage room adorned with floral wallpaper, a cartoon
-> rooster sits comfortably in a floral-patterned armchair, sipping from a bottle
-> of beer. The rooster, with its vibrant red comb and wattle, displays a range of
-> expressions—smiling, nodding, and opening its beak wide in a cheerful manner.
-> The setting includes wooden furniture and another beer bottle on the table,
-> adding to the relaxed atmosphere. The camera captures the rooster from a
-> close-up angle, emphasizing its animated movements and lively demeanor.
+这是实际跑通训练的环境（conda env 名为 `pixel`，Python **3.12.14**）：
 
-Run the exact release command used for the video above:
+```text
+python          3.12.14
+torch           2.5.1+cu124
+torchvision     0.20.1+cu124
+triton          3.1.0
+transformers    5.17.0
+diffusers       0.40.0
+accelerate      1.15.0
+peft            0.21.0
+flash-linear-attention  0.3.2      # attn_type: linear 依赖它
+mmcv            1.7.2
+webdataset      0.2.111
+omegaconf       2.3.1
+numpy           1.26.4
+tensorboard     2.16.2
+setuptools      83.0.0
+bitsandbytes    0.50.2
+```
+
+> ⚠️ **`environment_setup.sh` 不能直接用来复现这套环境。** 它按 `pyproject.toml` 装的是 Python 3.11 / `torch 2.9.1+cu128` / `transformers 4.57.3` /
+> `flash-attn` / `transformer_engine`，和我实际跑通的版本**不一样**。
+> **优先方案是直接复制 conda 环境**（`conda env export` + `conda env create`，或 `pip freeze` 后重装）。
+> 如果必须重装，按上面这张表来装，**不要**跑 `environment_setup.sh`。
+
+### 2.3 不需要装的东西
+
+| 包 | 为什么不需要 |
+|---|---|
+| `flash-attn` | 配置里 `use_flash_attn: false`，交叉注意力走 PyTorch SDPA；实际环境里也没装 |
+| `xformers` | 实际环境里没有；跑测试时用 `DISABLE_XFORMERS=1` |
+| `transformer_engine` / `Pi3` / `qwen-vl-utils` / `hpsv2` | 这些是 SANA-WM / SANA-Video / 评测工具链用的，pixel 训练用不到 |
+
+### 2.4 仓库是「就地运行」，不是安装成包
+
+实测 `pixel` 环境里 `import diffusion` 是**失败**的——这个仓库没有 `pip install -e .`。
+所有脚本都靠 `PYTHONPATH=$REPO_ROOT`（或 `cd` 到仓库根）来导入 `diffusion.*` / `sana.*`。
+
+**所以每个训练命令前都要有 `export PYTHONPATH=$PWD`，这是最容易踩的坑。**
+
+---
+
+## 3. 要准备哪些模型和数据
+
+### 3.1 必需
+
+| 文件 | 大小 | 从哪来 | 放在哪 / 怎么配 |
+|---|---|---|---|
+| **数据集** `webdataset/` | 27 GB | 我直接给你 | `configs/.../Sana_1600M_1024px_webdataset_bf16_lr2e5.yaml` → `data.data_dir` |
+| **Gemma-2-2B-it** | 9.8 GB | 我直接给你整个目录（推荐）；或自己从 `google/gemma-2-2b-it` 下（HF 上的**门控模型**，要先在网页上接受 Google 的许可协议，再 `huggingface-cli login`） | 同上 YAML → `text_encoder.text_encoder_name`（填**本地目录路径**，不要填 HF repo id） |
+
+Gemma 不能随便换：`caption_channels: 2304`、`model_max_length: 300` 是跟这个编码器绑死的。
+
+### 3.2 看情况需要
+
+| 文件 | 大小 | 什么时候需要 |
+|---|---|---|
+| 我的**训练 checkpoint** `epoch_210_step_65597.pth` | 13.3 GB | **续训 / 微调**时。这是**完整训练状态**（模型 + optimizer + scheduler + epoch/step），不是纯权重 |
+| **pixel-init** `SANA1.5_1.6B_1024px_pixel_init.pth` | 6.5 GB | **从零开始训**（不续训）时作为权重初始化 |
+| SANA1.5 1.6B 原始 `SANA1.5_1.6B_1024px.pth` | 6.0 GB | 只有要从头**重新生成** pixel-init 时才要（见 [§3.4](#34-可选自己生成-pixel-init)） |
+
+### 3.3 明确不需要
+
+| 文件 | 为什么不需要 |
+|---|---|
+| **DC-AE VAE** `mit-han-lab/dc-ae-f32c32-sana-1.1-diffusers` (1.3 GB) | 代码里 `train.py:776` 只在 `not pixel_space` 时才构造 VAE；pixel 模式下 `vae = None`，**`vae_pretrained` 这个字段根本不会被读**。YAML 里留着它只是为了 `SanaConfig` 的结构完整性。日志里会打印 `data space: pixel (VAE construction, encode, and decode are disabled)` |
+
+### 3.4 （可选）自己生成 pixel-init
+
+只有在你没有我给的 pixel-init、又需要从零训练时才做：
 
 ```bash
-bash inference_video_scripts/inference_sana_video.sh \
-  --np 1 \
-  --config configs/sana_video2/SanaVideo2_5B_720p.yaml \
-  --model_path hf://Efficient-Large-Model/SANA-Video_2.0_5B_720p/checkpoints/SANA_Video_2.0_5B_720p.pth \
-  --txt_file=asset/samples/sana_video2_5b_720p_demo.txt \
-  --cfg_scale 8 \
-  --flow_shift 12 \
-  --step 50 \
-  --fps 24 \
-  --motion_score 20 \
-  --seed 4 \
-  --work_dir output/sana_video2_t2v_720p_demo
+cd <repo root>
+export PYTHONPATH=$PWD
+
+# 1) 下原始 SANA1.5 1.6B checkpoint（只取那个 .pth，别把 diffusers 权重也拉下来）
+hf download Efficient-Large-Model/SANA1.5_1.6B_1024px \
+   checkpoints/SANA1.5_1.6B_1024px.pth --local-dir /your/ckpts/SANA1.5_1.6B_1024px
+
+# 2) 转换成 pixel 初始化权重
+python tools/convert_sana_to_pixel.py \
+  --source /your/ckpts/SANA1.5_1.6B_1024px/checkpoints/SANA1.5_1.6B_1024px.pth \
+  --output /your/ckpts/SANA1.5_1.6B_1024px_pixel_init/checkpoints/SANA1.5_1.6B_1024px_pixel_init.pth
 ```
 
-The online preview supports 5-second (81 frames at 16 FPS) and 8-second
-(193 frames at 24 FPS) outputs, and defaults to RL LoRA scale 0.7. Run the
-T2V-only full DMD checkpoint at its native RL scale 1.0 with the 5-second
-profile using:
+脚本会把 transformer / 时间 / 文本条件权重**原样复制**，丢掉 latent 的 `x_embedder.*` 与 `final_layer.*`，并用固定 `--seed 1`（可改）**确定性**初始化 RGB patch embedder 和 Pixel Detailer Head。
+`--dry-run` 只看报告不落盘，`--source-sha256` 会顺便校验源文件哈希。
+转换完旁边会有一个 `.conversion.json` 记录明细（missing / unexpected 都应为 0）。
+
+---
+
+## 4. 必须改的路径
+
+### 4.1 配置文件：`configs/sana_pixel/Sana_1600M_1024px_webdataset_bf16_lr2e5.yaml`
+
+**只有这 3 行是机器相关的**，其余超参**不用改**（见 [§6.4](#64-训练超参就是现在这一套)）：
+
+| 行 | 字段 | 我这边 | 你改成 |
+|---|---|---|---|
+| 8 | `data.data_dir` | `/home/ganchangyi/dataset/SANA-Pixel-Dataset/webdataset` | 你的数据集根目录（**注意是列表** `[...]`） |
+| 33 | `model.load_from` | `/home/ganchangyi/huggingface_ckpts/SANA1.5_1.6B_1024px_pixel_init/checkpoints/SANA1.5_1.6B_1024px_pixel_init.pth` | 你的 pixel-init 路径。**只做续训时它不会被读**，但不要留一个不存在的路径（某些回退分支下会报错） |
+| 60 | `text_encoder.text_encoder_name` | `/home/ganchangyi/huggingface_ckpts/gemma-2-2b-it` | 你本地的 Gemma 目录 |
+
+另外建议确认（一般不用改）：`train.null_embed_root: output/pretrained_models/` 和 `train.valid_prompt_embed_root: output/tmp_embed/` 是**相对路径**，第一次跑会自动生成（需要能读到 Gemma）。
+
+### 4.2 启动脚本：`train_scripts/sbatch_train_sana_pixel_8gpu_100epoch.sh`
+
+| 行 | 内容 | 要改什么 |
+|---|---|---|
+| 3–11 | `#SBATCH --account=students --partition=gpujl --nodes=2 --gpus-per-node=4 ...` | 改成你集群的账号、分区、节点数 |
+| 12–13 | `--output=/home/ganchangyi/.../output/slurm-%x-%j.out` | Slurm 日志绝对路径 |
+| 17 | `REPO_ROOT="/fs1/private/user/ganchangyi/code/Sana-pixel/Sana"` | 你的仓库绝对路径 |
+| 20 | `TORCHRUN=".../envs/pixel/bin/torchrun"` | 你环境里的 `torchrun`（或直接用 `torchrun`） |
+| 23–24 | `conda.sh` 路径 / `conda activate pixel` | 你的 conda 和环境名 |
+| 27–28 | `HF_HUB_OFFLINE=1` / `TRANSFORMERS_OFFLINE=1` | 本地权重齐了可以保留（避免联网卡住）；**Gemma 没缓存好就删掉这两行**，否则会直接报找不到模型 |
+
+⚠️ `--gpus-per-node` 必须和 torchrun 的 `--nproc_per_node` 相等（脚本里硬编码是 4）。
+
+### 4.3 单机脚本：`train_scripts/train_sana_pixel.sh`
+
+不写死绝对路径，靠环境变量，一般不用改：
+
+```text
+CONFIG=configs/sana_pixel/Sana_1600M_1024px_webdataset_bf16_lr2e5.yaml
+NP=4
+WORK_DIR=output/sana_pixel_1024_10k
+MASTER_PORT=29510
+TORCHRUN=torchrun
+```
+
+### 4.4 代码本身
+
+`diffusion/` 和 `sana/` 里的 Python 代码**没有**写死的 `/home/ganchangyi` 路径，不用改。
+写死路径只在上面这些配置/脚本，以及 `tools/convert_sana_to_pixel.py`（只在 [§3.4](#34-可选自己生成-pixel-init) 才用）和 `tools/dataset_gen/*`（只在你重新造数据集时才用）。
+
+---
+
+## 5. 数据集格式
+
+### 5.1 目录结构
+
+```text
+webdataset/
+├── wids-meta.json          # 必需：分片清单
+└── shards/
+    ├── shard-00000.tar     # 每片 2000 条样本
+    ├── shard-00001.tar
+    └── ...                 # 当前共 10 片 = 20,000 条
+```
+
+`wids-meta.json`：
+
+```json
+{
+  "wids_version": 1,
+  "shardlist": [
+    {"url": "shards/shard-00000.tar", "nsamples": 2000, "filesize": 2908313600}
+  ]
+}
+```
+
+`url` 是**相对路径**（相对 `wids-meta.json` 自己所在目录）；`wids_version` 必须是 `1`；每个分片必须有 `url` + `nsamples`。
+
+### 5.2 每个样本
+
+tar 里是**成对**的 `<key>.png` + `<key>.json`（USTAR、纯文件名、无目录）：
+
+```text
+Nature-Food-0787.png
+Nature-Food-0787.json
+```
+
+`<key>.json` 里的 **`prompt` / `height` / `width` 是加载器真正要用的**（其余字段如 `source_id` / `class` / `seed` 是造数据时留的元信息）：
+
+```json
+{
+  "file_name": "Nature-Food-0787.png",
+  "prompt": "A stylized cacao pod with bold ridges, ...",
+  "height": 1024,
+  "width": 1024,
+  "global_index": 5117, "variant": 1, "prompt_index": 5117,
+  "class": "Nature", "subclass": "Food", "topic": "cacao pod",
+  "angle": "Graphic", "seed": 5117,
+  "source_id": "Nature/Food/0078/cacao_pod/08"
+}
+```
+
+caption 走 JSON 里的 `prompt` 字段（配置 `caption_proportion: {prompt: 1}` + `caption_selection_type: proportion`），**不是** `.txt` 文件。
+
+### 5.3 想自己扩充数据集
+
+仓库里有专门给这个数据集用的打包脚本：
 
 ```bash
-bash inference_video_scripts/inference_sana_video.sh \
-  --np 1 \
-  --config configs/sana_video2/SanaVideo2_5B_720p.yaml \
-  --model_path hf://Efficient-Large-Model/SANA-Video_2.0_5B_720p_4step/checkpoints/SANA_Video_2.0_5B_720p_4step.pth \
-  --txt_file=asset/samples/sana_video2_5b_720p_demo.txt \
-  --task=t2v \
-  --model.image_size=480 \
-  --custom_height_width='[736,1280]' \
-  --sampling_algo=fastvideo_dmd_4step \
-  --generator_sigma_profile=sana_shift6_dpm \
-  --cfg_scale=1.0 \
-  --flow_shift=1.0 \
-  --motion_score=20 \
-  --negative_prompt=None \
-  --num_frames=81 \
-  --step=4 \
-  --fps=16 \
-  --seed=4 \
-  --work_dir output/sana_video2_t2v_720p_4step_preview
+python tools/dataset_gen/consolidate_dataset.py --dry-run   # 只校验
+python tools/dataset_gen/consolidate_dataset.py             # 生成 metadata.json
+python tools/dataset_gen/pack_webdataset.py --strict --samples-per-shard 2000
+python tools/dataset_gen/verify_webdataset.py               # 真正用 SanaWebDatasetMS 加载一遍
 ```
 
-The verified online seed-4 preview below uses the same prompt, temporal profile,
-and motion score, with the Space default RL LoRA scale 0.7 (1280 × 736,
-81 frames, 16 FPS, 5.06 seconds). The model card records its exact API call.
+**踩坑提醒（都会静默丢样本，不报错）：**
 
-<p align="center">
-  <a href="https://huggingface.co/Efficient-Large-Model/SANA-Video_2.0_5B_720p_4step/resolve/main/demo/sana_video2_5b_720p_4step_rooster_seed4.mp4">
-    <img src="https://huggingface.co/Efficient-Large-Model/SANA-Video_2.0_5B_720p_4step/resolve/main/demo/sana_video2_5b_720p_4step_rooster_seed4_poster.png" width="90%" alt="SANA-Video 2.0 5B four-step preview: a cartoon rooster holding a beer bottle in a floral vintage room"/>
-  </a>
-</p>
+- `<key>.json` 里缺 `height`/`width` → 该样本被采样器**静默跳过**。
+- 分片是**顺序读取**的（`DistributedRangedSampler` 不分片内乱序），所以**打包时必须 shuffle**，否则每个 epoch 拿到的样本顺序是固定的。
+- 加载器用了硬编码的 `lru_size = 10`，分片数建议 ≤ 10，否则缓存会抖动。
+- `.jpeg` / `.webp` 不被支持，只认 `.png` / `.jpg`。
 
-<p align="center">
-  <a href="https://huggingface.co/Efficient-Large-Model/SANA-Video_2.0_5B_720p_4step/resolve/main/demo/sana_video2_5b_720p_4step_rooster_seed4.mp4">▶ Watch or download the verified four-step video</a>
-</p>
+---
 
-### Inference with 🧨 diffusers
+## 6. 启动训练
 
-```python
-import torch
-from diffusers import SanaPipeline
+### 6.0 先自检（强烈建议）
 
-pipe = SanaPipeline.from_pretrained(
-    "Efficient-Large-Model/SANA1.5_1.6B_1024px_diffusers",
-    torch_dtype=torch.bfloat16,
-)
-pipe.to("cuda")
+```bash
+cd <repo root>
+export PYTHONPATH=$PWD
 
-pipe.vae.to(torch.bfloat16)
-pipe.text_encoder.to(torch.bfloat16)
+# 单元测试：验证 pixel 模型、权重转换、严格加载
+DISABLE_XFORMERS=1 python -m unittest -v tests.test_sana_pixel
 
-prompt = 'a cyberpunk cat with a neon sign that says "Sana"'
-image = pipe(
-    prompt=prompt,
-    height=1024,
-    width=1024,
-    guidance_scale=4.5,
-    num_inference_steps=20,
-    generator=torch.Generator(device="cuda").manual_seed(42),
-)[0]
-
-image[0].save("sana.png")
+# 单卡前向/反向 + AdamW 单步审计（1024px，确认显存和梯度都对）
+python tools/smoke_test_sana_pixel.py --optimizer-step --image-size 1024
 ```
 
-> [!TIP]
-> Upgrade your `diffusers>=0.32.0` to use `SanaPipeline`. More details can be found in [📚 Docs](https://nvlabs.github.io/Sana/docs/).
+两个都过了再上多卡。
 
-## Getting Started
+### 6.1 单机多卡（推荐先用这个）
 
-- [📚 **Full Documentation**](https://nvlabs.github.io/Sana/docs/)
-- [Installation Guide](https://nvlabs.github.io/Sana/docs/installation/)
-- [Model Zoo](https://nvlabs.github.io/Sana/docs/model_zoo/)
-- [Sana Inference & Training](https://nvlabs.github.io/Sana/docs/sana/)
-- [SANA-Sprint](https://nvlabs.github.io/Sana/docs/sana_sprint/)
-- [SANA-Video](https://nvlabs.github.io/Sana/docs/sana_video/)
-- [SANA-Video 2.0](https://nvlabs.github.io/Sana/docs/sana_video2/)
-- [LongSANA](https://nvlabs.github.io/Sana/docs/longsana/)
-- [SANA-WM](https://nvlabs.github.io/Sana/docs/sana_wm/)
-- [SANA-Streaming](https://nvlabs.github.io/Sana/docs/sana_streaming/)
-- [ControlNet](https://nvlabs.github.io/Sana/docs/sana_controlnet/)
-- [LoRA / DreamBooth](https://nvlabs.github.io/Sana/docs/sana_lora_dreambooth/)
-- [Sol-RL Post-Training](https://nvlabs.github.io/Sana/docs/sol_rl/)
-- [Quantization (4bit / 8bit)](https://nvlabs.github.io/Sana/docs/4bit_sana/)
-- [ComfyUI](https://nvlabs.github.io/Sana/docs/ComfyUI/comfyui/)
-- [SGLang](https://nvlabs.github.io/Sana/docs/sglang/)
+```bash
+cd <repo root>
+export PYTHONPATH=$PWD
 
-## Performance
+NP=8 bash train_scripts/train_sana_pixel.sh \
+  --name=sana_pixel_8gpu_1000epoch \
+  --report_to=tensorboard \
+  --train.train_batch_size=4 \
+  --train.gradient_accumulation_steps=4 \
+  --train.num_epochs=1000 \
+  --train.early_stop_hours=0 \
+  --train.visualize=true \
+  --train.eval_sampling_epochs=15 \
+  --train.eval_sampling_steps=1000000000 \
+  --train.save_model_epochs=15 \
+  --train.save_model_steps=1000000000
+```
 
-### Image Generation (1024px)
+`WORK_DIR` 默认是 `output/sana_pixel_1024_10k`，建议显式指定：
 
-| Methods (1024x1024) | Throughput (samples/s) | Latency (s) | Params (B) | Speedup | FID 👇 | CLIP 👆 | GenEval 👆 | DPG 👆 |
-|--------------------------------------------------------------------------------------------------|------------------------|-------------|------------|---------|-------------|--------------|-------------|---------------|
-| FLUX-dev | 0.04 | 23.0 | 12.0 | 1.0× | 10.15 | 27.47 | 0.67 | 84.0 |
-| **Sana-0.6B** | 1.7 | 0.9 | 0.6 | 39.5× | _5.81_ | 28.36 | 0.64 | 83.6 |
-| **[Sana-0.6B](https://huggingface.co/Efficient-Large-Model/Sana_600M_1024px)** | 1.7 | 0.9 | 0.6 | 39.5× | **5.61** | 28.80 | 0.68 | _84.2_ |
-| **[Sana-1.6B](https://huggingface.co/Efficient-Large-Model/Sana_1600M_1024px_MultiLing)** | 1.0 | 1.2 | 1.6 | 23.3× | 5.92 | _28.94_ | _0.69_ | <u>84.5</u> |
-| **[Sana-1.5 1.6B](https://huggingface.co/Efficient-Large-Model/SANA1.5_1.6B_1024px_diffusers)** | 1.0 | 1.2 | 1.6 | 23.3× | <u>5.70</u> | <u>29.12</u> | **0.82** | <u>84.5</u> |
-| **[Sana-1.5 4.8B](https://huggingface.co/Efficient-Large-Model/SANA1.5_4.8B_1024px_diffusers)** | 0.26 | 4.2 | 4.8 | 6.5× | 5.99 | **29.23** | <u>0.81</u> | **84.7** |
+```bash
+NP=8 WORK_DIR=output/my_run bash train_scripts/train_sana_pixel.sh ...
+```
 
-### Video Generation (VBench)
+这个脚本本质就是（`train_scripts/train_sana_pixel.sh:12-20`）：
 
-| Models | Evaluation setting | Latency (s) | Params (B) | VBench Total ↑ | Quality ↑ | Semantic ↑ |
-|--------|--------------------|-------------|------------|----------------|-----------|------------|
-| Wan-2.1-14B | 720p | 1897 | 14 | 83.73 | 85.77 | 75.58 |
-| Wan-2.1-1.3B | 720p | 400 | 1.3 | 83.38 | 85.67 | 74.22 |
-| **SANA-Video-2B** | 720p | **36** | **2** | 84.05 | 84.63 | **81.73** |
-| **[SANA-Video 2.0 5B](https://arxiv.org/abs/2607.21553)** | 480×832×81 | **13.2** | 5 | **84.30** | **85.61** | 79.05 |
+```bash
+torchrun --nproc_per_node=$NP --master_port=$MASTER_PORT \
+  train_scripts/train.py \
+  --config_path=configs/sana_pixel/Sana_1600M_1024px_webdataset_bf16_lr2e5.yaml \
+  --work_dir=$WORK_DIR --name=$NAME --report_to=tensorboard "$@"
+```
 
-SANA-Video 2.0 results follow the paper's 40-step, single-H100 VBench protocol. At 736×1280×81, its end-to-end latency is 30.9 seconds on one H100.
+**`train.py` 必须用 `torchrun` 启动**：它直接读 `os.environ["LOCAL_RANK"]` / `WORLD_SIZE` / `RANK`，没有默认值，`python train.py` 会直接 `KeyError`。单卡也要写 `NP=1`。
 
-# 💪To-Do List
+### 6.2 多机 Slurm
 
-We will try our best to achieve
+改好 [§4.2](#42-启动脚本train_scriptssbatch_train_sana_pixel_8gpu_100epochsh) 里的东西后：
 
-- [✅] Training code
-- [✅] Inference code
-- [✅] Model zoo
-- [✅] [ComfyUI Nodes](https://github.com/lawrence-cj/ComfyUI_ExtraModels)(SANA, SANA-1.5,
-  SANA-Sprint)
-- [✅] DC-AE Diffusers
-- [✅] Sana merged in Diffusers(https://github.com/huggingface/diffusers/pull/9982)
-- [✅] LoRA training by [@paul](https://github.com/sayakpaul)(`diffusers`: https://github.com/
-  huggingface/diffusers/pull/10234)
-- [✅] 2K/4K resolution models.(Thanks [@SUPIR](https://github.com/Fanghua-Yu/SUPIR) to
-  provide a 4K super-resolution model)
-- [✅] 8bit / 4bit Laptop development
-- [✅] ControlNet (train & inference & models)
-- [✅] FSDP Training
-- [✅] SANA-1.5 (Larger model size / Inference Scaling)
-- [✅] SANA-Sprint: Few-step generator
-- [✅] Faster DCAE-Lite [weight](https://huggingface.co/dc-ai/dc-ae-lite-f32c32-diffusers)
-- [✅] Better re-construction F32/F64 [VAEs](https://github.com/dc-ai-projects/DC-Gen)
-- [✅] SANA-Video: Linear DiT Video model, and real-time minute-length video generation
-- [✅] SANA-Video 2.0 training, inference, and 5B/14B model architecture
-- [✅] [SANA-Video 2.0 5B 720p weights](https://huggingface.co/Efficient-Large-Model/SANA-Video_2.0_5B_720p)
-- [✅] RL Post-training: collaborate with [Cosmos-RL](https://github.com/nvidia-cosmos/cosmos-rl)
-- [✅] SANA World Model
-- [✅] SANA-Streaming Video-to-Video Editing
-- [🚀] See you in the future
+```bash
+sbatch train_scripts/sbatch_train_sana_pixel_8gpu_100epoch.sh
+```
 
-## 🤗 Acknowledgements
+脚本的做法是**每节点一个 torchrun**，由 `srun` 拉起，用 `scontrol show hostnames` 取第一个节点当 `MASTER_ADDR`：
 
-Thanks to the following open-sourced projects:
+```bash
+srun --nodes=$SLURM_NNODES --ntasks=$SLURM_NNODES --ntasks-per-node=1 bash -lc '
+  exec "$TORCHRUN" --nnodes=$SLURM_NNODES --nproc_per_node=4 \
+    --node_rank=$SLURM_PROCID --master_addr=$MASTER_ADDR --master_port=$MASTER_PORT ...
+'
+```
 
-**Thanks to the following open-sourced codebase for their wonderful work and codebase!**
+注意：
 
-- [PixArt-α](https://github.com/PixArt-alpha/PixArt-alpha)
-- [PixArt-Σ](https://github.com/PixArt-alpha/PixArt-sigma)
-- [diffusers](https://github.com/huggingface/diffusers)
-- [Efficient-ViT](https://github.com/mit-han-lab/efficientvit)
-- [ComfyUI_ExtraModels](https://github.com/city96/ComfyUI_ExtraModels)
-- [SVDQuant and Nunchaku](https://github.com/mit-han-lab/nunchaku)
-- [Open-Sora](https://github.com/hpcaitech/Open-Sora)
-- [Wan](https://github.com/Wan-Video/Wan2.1)
-- [LTX-2](https://github.com/Lightricks/LTX-2)
-- [LongLive](https://github.com/NVlabs/LongLive)
-- [Cosmos-RL](https://github.com/nvidia-cosmos/cosmos-rl)
-- [Sol-Engine](https://github.com/NVlabs/Sana/tree/sol-engine)
+- `MASTER_PORT` 默认 29520，多任务共用节点时要错开。
+- 集群有 HTTP 代理时，脚本里的 `NO_PROXY=127.0.0.1,localhost` 是必要的，否则 NCCL 初始化会卡住。保留它。
 
-Thanks [Paper2Video](https://showlab.github.io/Paper2Video/) for generating Jeason presenting SANA😊. Refer to [Paper2Video](https://showlab.github.io/Paper2Video/) for more details.
+### 6.3 TensorBoard
 
-<div align="center">
-  <a href="https://showlab.github.io/Paper2Video/assets/huang/huang.mp4" target="_blank">
-    <img src="https://huggingface.co/datasets/Efficient-Large-Model/Sana-assets/resolve/main/asset/paper2video.jpg" alt="Presenting Video of SANA" style="width: 60%; margin: 0 auto; display: block">
-  </a>
-</div>
+配置里是 `--report_to=tensorboard`（`report_to` 的默认值其实是 `wandb`，一定要显式覆盖）。事件文件在：
 
-## Contribution
+```text
+<work_dir>/logs/<tracker_project_name>/     # tracker_project_name 默认 sana-video-baseline
+```
 
-Thanks go to these wonderful contributors:
+### 6.4 训练超参：就是现在这一套
 
-<a href="https://github.com/NVlabs/Sana/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=NVlabs/Sana" />
-</a>
+下表是**实际生产跑的那一套**（YAML + 上面 CLI 覆盖合并后的有效值），你照抄就行：
 
-## 🌟 Star History
+| 项 | 值 | 来源 |
+|---|---|---|
+| 模型 | `SanaMSPixel_1600M_P32_D20` | YAML |
+| 分辨率 / 数据空间 | 1024 / `pixel`（**不过 VAE**） | YAML |
+| 每卡 batch | 4 | **CLI** |
+| 梯度累积 | 4 | **CLI** |
+| 全局 batch | 4 × GPU 数 × 4 | 推导 |
+| 优化器 | AdamW，`lr 5e-5`，`betas (0.9, 0.999)`，`weight_decay 0.01`，`eps 1e-8` | YAML |
+| LR 调度 | `constant` + `num_warmup_steps: 1000` | YAML |
+| 精度 | bf16 (`mixed_precision: bf16`)，`fp32_attention: true` | YAML |
+| 梯度检查点 / 裁剪 | `grad_checkpointing: true` / `gradient_clip: 1.0` | YAML |
+| 分布式 | **DDP**（`use_fsdp: false`），`ema_update: false` | YAML |
+| 可训练范围 | 前 5 块 + 后 5 块 + pixel 接口，中间 10 块冻结 | YAML `l2p_first/last_trainable_blocks: 5` |
+| attention / FFN | `attn_type: linear`（走 flash-linear-attention）/ `ffn_type: glumbconv` | YAML |
+| flow 设定 | `linear_flow`，`flow_shift: 3.0`，`predict_flow_v: true`，`logit_normal`（mean 0, std 1） | YAML |
+| epochs | **1000** | **CLI**（YAML 默认 100） |
+| 存 checkpoint | **每 15 epoch** | **CLI**（YAML 默认每 1 epoch） |
+| 可视化 / 验证 | 每 15 epoch，`visualize: true`，`local_save_vis: true` | **CLI** |
+| 训练时长上限 | **关闭**（`early_stop_hours: 0`） | **CLI**（YAML 默认 100 小时） |
+| `num_workers` | 10 | YAML |
 
-[![NVlabs/Sana star history chart](asset/star-history.svg)](https://github.com/NVlabs/Sana/stargazers)
+> YAML 里的 `eval_sampling_steps: 500` / `save_model_steps: 10000` 这些**被 CLI 覆盖成 `1000000000`**，
+> 也就是把「按 step 触发」关掉，只留「按 epoch 触发」。**如果你漏掉这些覆盖，会变成每 1 个 epoch 存一次 checkpoint**，磁盘很快就满。
 
-# 📖 BibTeX
+### 6.5 常用 CLI 覆盖
+
+`train.py` 用 [pyrallis](https://github.com/eladrich/pyrallis) 解析，任何 YAML 字段都能用 `--a.b=value` 覆盖：
+
+| 参数 | 说明 |
+|---|---|
+| `--config_path` | 基础 YAML |
+| `--work_dir` | 运行目录（checkpoint / 日志 / 可视化都在这下面） |
+| `--name` | 运行名 |
+| `--report_to` | `tensorboard` 或 `wandb`（默认 `wandb`，**必须显式改成 tensorboard**） |
+| `--resume_from` | `latest` 或某个 `.pth` 路径，见 [§7](#7-续训--断点恢复) |
+| `--load_from` | 覆盖 `model.load_from`（权重初始化，不恢复 optimizer） |
+| `--train.num_epochs` | 总 epoch 数 |
+| `--train.train_batch_size` | **每卡** batch |
+| `--train.gradient_accumulation_steps` | 梯度累积 |
+| `--train.save_model_epochs` / `save_model_steps` | 存 checkpoint 的触发条件 |
+| `--train.early_stop_hours` | 训练时长上限（小时），`0` = 关闭 |
+| `--train.visualize` / `eval_sampling_epochs` / `eval_sampling_steps` | 验证可视化 |
+| `--train.use_fsdp` | 默认 `false`（DDP） |
+
+每次启动会把自己的**合并后配置** dump 到 `<work_dir>/config.yaml`，出问题先看这个文件。
+
+---
+
+## 7. 续训 / 断点恢复
+
+### 7.1 checkpoint 是什么
+
+- 位置：`<work_dir>/checkpoints/`
+- 命名：`epoch_{E}_step_{S}.pth`，例如 `epoch_210_step_65597.pth`
+- 内容：**完整训练状态**——`state_dict`、`optimizer`、`scheduler`、`epoch`、`step`、`rng_state`（如果开了 EMA 还有 `state_dict_ema`）
+- 大小：**约 13.3 GB**（因为含 AdamW 的 optimizer state，不是纯权重）
+- 另有 `latest.pth`，是一个**绝对路径软链接**指向最新的那个文件
+
+### 7.2 恢复的语义（很重要）
+
+| 你传的 | 行为 |
+|---|---|
+| **不传 `--resume_from`** | 全新训练。会加载 `model.load_from` 作为**权重初始化**（pixel 模式下只允许缺 `pos_embed`，其它 missing/unexpected 直接报错） |
+| **`--resume_from=latest`** | 在 `<work_dir>/checkpoints/` 里找 checkpoint：优先用 `latest.pth`；如果它不存在或是**断链**，就按文件名里的 **step 号排序取最大** 的那个。恢复模型 + optimizer + scheduler + epoch/step |
+| **`--resume_from=/abs/path/xxx.pth`** | 用指定文件。注意：这种写法**不会**恢复 LR scheduler（因为 YAML 里 `resume_lr_scheduler: false`），所以**推荐用 `latest`** |
+
+三个关键点：
+
+1. **`--resume_from` 一旦生效，`model.load_from` 就不会被读**（`train.py:703-712`：`load_from = False`）。所以你**不需要**把 pixel-init 也拷过去。
+2. **`latest.pth` 是绝对路径软链，跨机器拷贝一定会断。** 但没关系：代码检测到断链会自动回退到「按 step 号取最大」，所以**直接把 `epoch_*.pth` 真实文件拷过去就能用**。想干净点就自己重建软链。
+3. **`<work_dir>/checkpoints/` 为空时，`--resume_from=latest` 不会报错**，而是**静默退化**成「用 `model.load_from` 加载权重、不恢复 optimizer」起步。所以看到 loss 从初始值开始、没有 `Skipped Steps` 日志，就说明它其实没接上。
+
+### 7.3 怎么续训
+
+```bash
+cd <repo root>
+export PYTHONPATH=$PWD
+
+# 1) 把真实 checkpoint 放进 work_dir（用真实文件，不要拷软链）
+mkdir -p output/sana_pixel_8gpu_1000epoch/checkpoints
+cp /path/to/epoch_210_step_65597.pth output/sana_pixel_8gpu_1000epoch/checkpoints/
+
+# 2) 加 --resume_from=latest，其余参数和我完全一致
+NP=8 WORK_DIR=output/sana_pixel_8gpu_1000epoch bash train_scripts/train_sana_pixel.sh \
+  --name=sana_pixel_8gpu_1000epoch --report_to=tensorboard --resume_from=latest \
+  --train.train_batch_size=4 --train.gradient_accumulation_steps=4 \
+  --train.num_epochs=1000 --train.early_stop_hours=0 --train.visualize=true \
+  --train.eval_sampling_epochs=15 --train.eval_sampling_steps=1000000000 \
+  --train.save_model_epochs=15 --train.save_model_steps=1000000000
+```
+
+Slurm 的话 `sbatch` 脚本里**已经有** `--resume_from=latest`（第 60 行），直接 `sbatch` 就行。
+
+### 7.4 只要权重、不要 optimizer（微调场景）
+
+如果你想拿我的模型当初始化、但**从干净的 optimizer 重新开始**：
+
+```bash
+... train_sana_pixel.sh --load_from=/path/to/epoch_210_step_65597.pth   # 不要传 --resume_from
+```
+
+`load_from` 兼容完整训练状态文件（`checkpoint.py:293` 会取 `state_dict` 字段），所以可以直接指向训练 checkpoint。
+
+### 7.5 ⚠️ 改 `num_epochs` 的坑
+
+epoch 循环是 `range(start_epoch + 1, num_epochs + 1)`。如果你从 epoch 210 的 checkpoint 恢复，又设了 `--train.num_epochs=100`，**循环一次都不进，看起来「启动后什么都没发生」**。
+恢复时务必保证 `num_epochs` 大于 checkpoint 里的 epoch。
+
+---
+
+## 8. 显存、磁盘、时间预算
+
+实测数据（8 × A40 46 GB，2 节点 × 4 卡，20,000 样本）：
+
+| 项 | 实测值 |
+|---|---|
+| 一轮完整数据遍历 | **625 个 local step**（= 20000 /（每卡 batch 4 × 8 卡）） |
+| 单步耗时 | **约 2.0 s**（`time all:1.99, model:1.83, data:0.003, lm:0.15, vae:0.006`） |
+| 一个 checkpoint 间隔 | 约 **2.4 小时**（每 15 epoch） |
+| 单个 checkpoint | **13.3 GB** |
+| 实测 37 小时 | 跑到 epoch 221 / global step 69170 |
+| 单卡 1024px 单步峰值显存 | 约 **19 GiB**（`tools/smoke_test_sana_pixel.py`） |
+| 无 OOM / 无 CUDA error | ✅ |
+
+### 磁盘警告
+
+**checkpoint 不会自动清理**（代码里没有任何 `os.remove`）。按 `save_model_epochs=15` 跑满：
+
+```text
+1000 / 15 ≈ 67 个 checkpoint × 13.3 GB ≈ 890 GB
+```
+
+必须提前规划。可选做法：
+
+- 调大 `--train.save_model_epochs`（比如 30/50）；
+- 或者定期手动删旧的 `epoch_*.pth`（**保留 `latest.pth` 指向的那个**）；
+- 或者写个清理脚本只保留最近 3 个。
+
+### 时间估算的两个提醒
+
+1. **日志里的 `Epoch` 计数和「数据遍历次数」不是 1:1**（这个仓库实测约 2 epoch 对应 1 次完整遍历），所以**估时间请用 local step / checkpoint 文件名里的 step 号**，别用 epoch。
+2. **代码内置的 `total_eta` 字段偏大**（它按 `dataloader_len × num_epochs` 算，和实际的 epoch 计数不一致）。我这边日志显示 `total_eta: 12 days`，按实测速率推算的实际总时长约为它的一半。**别拿这个数字做决策。**
+
+### 显存不够怎么办
+
+按这个顺序调：
+
+1. 调小 `--train.train_batch_size`（每卡 batch），同时**按比例调大** `--train.gradient_accumulation_steps` 保持全局 batch 不变（全局 batch = 每卡 batch × 卡数 × 累积步数）；
+2. 确认 `grad_checkpointing: true`（YAML 里已经是）；
+3. 卡不够就用更少卡 + 更多累积（注意一轮的 local step 数 = 20000 /（batch × 卡数）会变，checkpoint 间隔的**语义**也跟着变）。
+
+---
+
+## 9. 推理（可选）
+
+推理**复用同一份 YAML**：pixel 模式会读 `model.load_from`，直接输出 RGB，**同样不加载 VAE**。
+
+```bash
+cd <repo root>
+export PYTHONPATH=$PWD
+
+# 用训练好的 checkpoint 推理：把 YAML 里的 model.load_from 指向它，
+# 或者不传 --resume_from、直接用 --load_from 覆盖
+python scripts/inference.py --config configs/sana_pixel/Sana_1600M_1024px_webdataset_bf16_lr2e5.yaml
+```
+
+`scripts/inference.py` 只有一个 `--config` 参数，其余都从 YAML 里读（包括 prompt 列表、采样步数、`vis_sampler: flow_dpm-solver`、`flow_shift: 3.0`）。
+
+> 注意：**pixel 接口是随机初始化的新模块**，如果你用的是 pixel-init 而不是训练过的 checkpoint，出来的图是没有意义的。
+
+---
+
+## 10. 常见坑
+
+| 现象 | 原因 / 解决 |
+|---|---|
+| `ModuleNotFoundError: No module named 'diffusion'` | 没设 `PYTHONPATH`。这个仓库不装成包，必须 `export PYTHONPATH=$PWD`（且 `cd` 到仓库根） |
+| `KeyError: 'LOCAL_RANK'` | 用 `python train.py` 直接跑了。必须用 `torchrun --nproc_per_node=N` |
+| 训练日志跑到 wandb 上去了 / 报 wandb 相关错 | `report_to` 默认是 `wandb`，必须显式 `--report_to=tensorboard` |
+| 磁盘疯涨，一个 epoch 一个 checkpoint | 漏了 `--train.save_model_steps=1000000000` / `--train.eval_sampling_steps=1000000000` 覆盖 |
+| `--resume_from=latest` 后 loss 从初始值开始 | `<work_dir>/checkpoints/` 是空的，静默退化成了 `load_from` 权重初始化。确认你把 `.pth` 放对了目录 |
+| `--resume_from` 后什么都不跑 | `--train.num_epochs` ≤ checkpoint 里的 epoch，epoch 循环为空。调大 `num_epochs` |
+| 拷贝到新机器后 `latest.pth` 报断链 | 绝对路径软链失效。**这是正常的**，代码会回退到按 step 排序取最新；也可以手动重建软链 |
+| OOM | 见 [§8](#显存不够怎么办) |
+| 集群上 NCCL 初始化卡死 | HTTP 代理问题，保留启动脚本里的 `NO_PROXY` / `no_proxy` |
+| 找不到 Gemma | 要么 `text_encoder_name` 路径写错了，要么开了 `HF_HUB_OFFLINE=1` 但本地没有缓存。删掉那两个 OFFLINE 变量或把权重放对 |
+| 一开始就报严格加载失败 `missing=[...] unexpected=[...]` | `model.load_from` 指向的 checkpoint 和 `SanaMSPixel_1600M_P32_D20` 结构不匹配。确认用的是 pixel-init 或训练 checkpoint，pixel 模式下只允许缺 `pos_embed` |
+| 数据集长度是 0 / 样本被跳过 | `<key>.json` 缺 `height`/`width`（会**静默**丢样本），或者 `wids-meta.json` 的 `url` 路径不对 |
+
+---
+
+## 11. 上游与许可
+
+本仓库基于 NVIDIA 的 **Sana** 代码库改（[NVlabs/Sana](https://github.com/NVlabs/Sana)，Apache-2.0）。上游的完整文档、模型库、其它任务（SANA-Video、SANA-WM、SANA-Sprint、Sol-RL、ControlNet…）都在 `docs/` 和 <https://nvlabs.github.io/Sana/docs/>。
+
+本仓库相对上游的改动，只服务于 **1024px latent→pixel 迁移训练**这一件事，主要涉及：
+
+- `diffusion/model/nets/sana_pixel.py` — pixel 模型与 Pixel Detailer Head
+- `train_scripts/train.py` — pixel 模式的 VAE 旁路、L2P 冻结策略、checkpoint 命名修正
+- `configs/sana_pixel/` — 本任务的配置
+- `tools/convert_sana_to_pixel.py`、`tools/smoke_test_sana_pixel.py` — 权重转换与审计
+- `tools/dataset_gen/` — 本数据集的生成与打包
+- `tests/test_sana_pixel.py` — pixel 模式测试
+
+工程验证记录见 `docs/sana_pixel_phase1.md` 和 `docs/sana_pixel_phase1_results.md`。
+
+上游引用：
 
 ```bibtex
-@misc{xie2024sana,
-      title={Sana: Efficient High-Resolution Image Synthesis with Linear Diffusion Transformer},
-      author={Enze Xie and Junsong Chen and Junyu Chen and Han Cai and Haotian Tang and Yujun Lin and Zhekai Zhang and Muyang Li and Ligeng Zhu and Yao Lu and Song Han},
-      year={2024},
-      eprint={2410.10629},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV},
-      url={https://arxiv.org/abs/2410.10629},
-    }
-
-```
-
-<details>
-<summary>Click to expand all BibTeX citations</summary>
-
-```bibtex
-@misc{xie2025sana,
-      title={SANA 1.5: Efficient Scaling of Training-Time and Inference-Time Compute in Linear Diffusion Transformer},
-      author={Xie, Enze and Chen, Junsong and Zhao, Yuyang rectangle and Yu, Jincheng and Zhu, Ligeng and Lin, Yujun and Zhang, Zhekai and Li, Muyang and Chen, Junyu and Cai, Han and others},
-      year={2025},
-      eprint={2501.18427},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV},
-      url={https://arxiv.org/abs/2501.18427},
-    }
-
-@misc{chen2025sanasprint,
-      title={SANA-Sprint: One-Step Diffusion with Continuous-Time Consistency Distillation},
-      author={Junsong Chen and Shuchen Xue and Yuyang Zhao and Jincheng Yu graves and Sayak Paul and Junyu Chen and Han Cai and Song Han and Enze Xie},
-      year={2025},
-      eprint={2503.09641},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV},
-      url={https://arxiv.org/abs/2503.09641},
-    }
-
-@misc{chen2025sanavideo,
-      title={SANA-Video: Efficient Video Generation with Block Linear Diffusion Transformer},
-      author={Chen, Junsong and Zhao, Yuyang and Yu, Jincheng and Chu, Ruihang and Chen, Junyu and Yang, Shuai and Wang, Xianbang and Pan, Yicheng and Zhou, Daquan and Ling, Huan and others},
-      year={2025},
-      eprint={2509.24695},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV},
-      url={https://arxiv.org/abs/2509.24695},
-    }
-
-@misc{li2026fp4,
-      title={FP4 Explore, BF16 Train: Diffusion Reinforcement Learning via Efficient Rollout Scaling},
-      author={Li, Yitong and Chen, Junsong and Xue, Shuchen and Zeren, Pengcuo and Fu, Siyuan and Yang, Dinghao and Tang, Yangyang and Bai, Junjie and Luo, Ping and Han, Song and others},
-      year={2026}
-      eprint={2604.06916},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV},
-      url={https://arxiv.org/abs/2604.06916},
-}
-
-@misc{zhu2026sanawm,
-      title={SANA-WM: Efficient Minute-Scale World Modeling with Hybrid Linear Diffusion Transformer},
-      author={Haoyi Zhu and Haozhe Liu and Yuyang Zhao and Tian Ye and Junsong Chen and Jincheng Yu and Tong He and Song Han and Enze Xie},
-      year={2026},
-      eprint={2605.15178},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV},
-      url={https://arxiv.org/abs/2605.15178},
-}
-
-@misc{zhao2026sanastreamingrealtimestreamingvideo,
-      title={SANA-Streaming: Real-time Streaming Video Editing with Hybrid Diffusion Transformer},
-      author={Yuyang Zhao and Yicheng Pan and Qiyuan He and Jincheng Yu and Junsong Chen and Tian Ye and Haozhe Liu and Enze Xie and Song Han},
-      year={2026},
-      eprint={2605.30409},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV},
-      url={https://arxiv.org/abs/2605.30409},
+@article{xie2025sana,
+  title={Sana 1.5: Efficient Scaling of Training-Time and Inference-Time Compute in Linear Diffusion Transformer},
+  author={Xie, Enze and Chen, Junsong and Chen, Junyu and Cai, Han and Tang, Haotian and Lin, Yujun and Zhang, Zhekai and Li, Muyang and Zhu, Ligeng and Lu, Yao and Han, Song},
+  journal={arXiv preprint arXiv:2501.18427},
+  year={2025}
 }
 ```
+
+许可证：Apache-2.0，见 `LICENSE`。
