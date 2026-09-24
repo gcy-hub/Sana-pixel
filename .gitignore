@@ -1,0 +1,100 @@
+# ---------------------------------------------------------------------------
+# Training / inference outputs (never commit these)
+# ---------------------------------------------------------------------------
+output/
+outputs/
+logs/
+work_dirs/
+wandb/
+runs/
+*.pid
+
+# Checkpoints and model weights
+*.ckpt
+*.pth
+*.pt
+*.safetensors
+*.bin
+*.onnx
+*.engine
+*.h5
+*.pb
+checkpoints/
+pretrained_models/
+experiments/
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+.venv/
+venv/
+env/
+.mypy_cache/
+.dmypy.json
+.ruff_cache/
+.pytest_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+.nox/
+
+# ---------------------------------------------------------------------------
+# Notebooks / docs
+# ---------------------------------------------------------------------------
+.ipynb_checkpoints/
+site/
+.mkdocs-build/
+
+# ---------------------------------------------------------------------------
+# Data dumps
+# ---------------------------------------------------------------------------
+*.npy
+*.npz
+*.pkl
+*.pickle
+*.hdf5
+*.tfrecord
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+*.rar
+# ...except the small demo assets that ship with the repo
+!asset/**/*.npy
+
+# ---------------------------------------------------------------------------
+# Editors / OS
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------------------------------------------------------------------------
+# Secrets / local config
+# ---------------------------------------------------------------------------
+.env
+.env.*
+*.local
+secrets.yaml
+secrets.yml
+.hf_token
+.netrc
